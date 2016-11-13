@@ -32,7 +32,13 @@ public class ResultSetRowPacket implements Packet {
         ByteArrayInputStream buffer = new ByteArrayInputStream(bytes);
         List<String> values = new LinkedList<String>();
         while (buffer.available() > 0) {
-            values.add(buffer.readLengthEncodedString());
+            int len = buffer.peek();
+            if (len == 0xfb) {
+                buffer.read();
+                values.add(null);
+            } else {
+                values.add(buffer.readLengthEncodedString());
+            }
         }
         this.values = values.toArray(new String[values.size()]);
     }

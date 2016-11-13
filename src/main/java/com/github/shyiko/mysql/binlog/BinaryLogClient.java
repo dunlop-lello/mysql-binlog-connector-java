@@ -42,6 +42,7 @@ import com.github.shyiko.mysql.binlog.network.protocol.ErrorPacket;
 import com.github.shyiko.mysql.binlog.network.protocol.GreetingPacket;
 import com.github.shyiko.mysql.binlog.network.protocol.Packet;
 import com.github.shyiko.mysql.binlog.network.protocol.PacketChannel;
+import com.github.shyiko.mysql.binlog.network.protocol.ResultSetColumnPacket;
 import com.github.shyiko.mysql.binlog.network.protocol.ResultSetRowPacket;
 import com.github.shyiko.mysql.binlog.network.protocol.command.AuthenticateCommand;
 import com.github.shyiko.mysql.binlog.network.protocol.command.Command;
@@ -62,6 +63,7 @@ import java.net.SocketException;
 import java.security.GeneralSecurityException;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
@@ -419,7 +421,6 @@ public class BinaryLogClient implements BinaryLogClientMXBean {
                 if (checksumType != ChecksumType.NONE) {
                     confirmSupportOfChecksum(checksumType);
                 }
-                requestBinaryLogStream();
             } catch (IOException e) {
                 disconnectChannel();
                 throw e;
@@ -438,6 +439,12 @@ public class BinaryLogClient implements BinaryLogClientMXBean {
                 for (LifecycleListener lifecycleListener : lifecycleListeners) {
                     lifecycleListener.onConnect(this);
                 }
+            }
+            try {
+                requestBinaryLogStream();
+            } catch (IOException e) {
+                disconnectChannel();
+                throw e;
             }
             if (keepAlive && !isKeepAliveThreadRunning()) {
                 spawnKeepAliveThread();
@@ -673,6 +680,12 @@ public class BinaryLogClient implements BinaryLogClientMXBean {
         binlogPosition = Long.parseLong(resultSetRow.getValue(1));
     }
 
+    public void execute(String statement, ResultSetListener listener) throws IOException
+    {
+        channel.write(new QueryCommand(statement));
+        readResultSet(listener);
+    }
+
     private ChecksumType fetchBinlogChecksum() throws IOException {
         channel.write(new QueryCommand("show global variables like 'binlog_checksum'"));
         ResultSetRowPacket[] resultSet = readResultSet();
@@ -810,8 +823,7 @@ public class BinaryLogClient implements BinaryLogClientMXBean {
         }
     }
 
-    private ResultSetRowPacket[] readResultSet() throws IOException {
-        List<ResultSetRowPacket> resultSet = new LinkedList<ResultSetRowPacket>();
+    private void readResultSet(ResultSetListener listener) throws IOException {
         byte[] statementResult = channel.read();
         if (statementResult[0] == (byte) 0xFF /* error */) {
             byte[] bytes = Arrays.copyOfRange(statementResult, 1, statementResult.length);
@@ -819,10 +831,29 @@ public class BinaryLogClient implements BinaryLogClientMXBean {
             throw new ServerException(errorPacket.getErrorMessage(), errorPacket.getErrorCode(),
                     errorPacket.getSqlState());
         }
-        while ((channel.read())[0] != (byte) 0xFE /* eof */) { /* skip */ }
-        for (byte[] bytes; (bytes = channel.read())[0] != (byte) 0xFE /* eof */; ) {
-            resultSet.add(new ResultSetRowPacket(bytes));
+        ByteArrayInputStream is = new ByteArrayInputStream(statementResult);
+        int fieldCount = is.readPackedInteger();
+        ArrayList<ResultSetColumnPacket> columns = new ArrayList();
+        for (int i = 0; i < fieldCount; i++) {
+            columns.add(i, new ResultSetColumnPacket(channel.read()));
         }
+        if ((channel.read())[0] != (byte) 0xFE /* eof */) {
+            throw new IOException("Unexpected data after reading "+fieldCount+" field(s)");
+        }
+        listener.beforeResultSetRowPackets(columns);
+        for (byte[] bytes; (bytes = channel.read())[0] != (byte) 0xFE /* eof */; ) {
+            listener.onResultSetRowPacket(new ResultSetRowPacket(bytes));
+        }
+        listener.afterResultSetRowPackets();
+    }
+
+    private ResultSetRowPacket[] readResultSet() throws IOException {
+        final List<ResultSetRowPacket> resultSet = new LinkedList<ResultSetRowPacket>();
+        readResultSet(new AbstractResultSetListener() {
+            public void onResultSetRowPacket(ResultSetRowPacket packet) {
+                resultSet.add(packet);
+            }
+        });
         return resultSet.toArray(new ResultSetRowPacket[resultSet.size()]);
     }
 
@@ -1028,4 +1059,27 @@ public class BinaryLogClient implements BinaryLogClientMXBean {
 
     }
 
+    /**
+     * {@link BinaryLogClient}'s ResultSetRowPacket listener.
+     */
+    public interface ResultSetListener {
+
+        void beforeResultSetRowPackets(ArrayList<ResultSetColumnPacket> columns);
+        
+        void onResultSetRowPacket(ResultSetRowPacket resultSetRowPacket);
+
+        void afterResultSetRowPackets();
+    }
+    
+ 
+    /**
+     * Default (no-op) implementation of {@link ResultSetListener}.
+     */
+    public static abstract class AbstractResultSetListener implements ResultSetListener {
+
+        public void beforeResultSetRowPackets(ArrayList<ResultSetColumnPacket> columns) { }
+
+        public void afterResultSetRowPackets() { }
+
+    }
 }
