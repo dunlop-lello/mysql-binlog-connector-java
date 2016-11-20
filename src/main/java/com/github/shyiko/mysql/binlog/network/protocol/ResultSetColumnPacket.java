@@ -55,6 +55,18 @@ public class ResultSetColumnPacket {
         decimals = buffer.readInteger(1);
     }
 
+    public String catalog() {
+        return catalog;
+    }
+
+    public String schema() {
+        return schema;
+    }
+
+    public String name() {
+        return name;
+    }
+
     public String toString() {
         return "ResultSetColumnPacket{" + "catalog=" + catalog + ", schema=" + schema + ", table=" + table + ", org_table=" + org_table + ", name=" + name + ", org_name=" + org_name + ", next_length=" + next_length + ", character_set=" + character_set + ", column_length=" + column_length + ", type=" + type + ", flags=" + flags + ", decimals=" + decimals + '}';
     }
